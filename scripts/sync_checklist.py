@@ -16,12 +16,14 @@ import os
 import re
 import sys
 import urllib.request
+from urllib.parse import quote
 
 ITEM_RE = re.compile(r"^-\s*\[([A-Za-z]+\d+)\]\s*(.*)$")
 DEFAULT_AUTHORITY = "/root/skill-repos/auto-organize/references/联动判断清单.md"
 DEFAULT_BACKUP = ("/root/skill-repos/g9-physics/references/联动判断清单.local.md")
-DEFAULT_URL = ("https://raw.githubusercontent.com/PGYMT/"
-               "dsh-auto-organize-work-files-skill/main/references/联动判断清单.md")
+DEFAULT_URL = quote("https://raw.githubusercontent.com/PGYMT/"
+                    "dsh-auto-organize-work-files-skill/main/references/联动判断清单.md",
+                    safe=":/")
 RECORD_HEAD = "## 同步记录"
 
 
@@ -96,8 +98,8 @@ def main(argv=None):
 
     backup_text = read_text(args.backup)
     if backup_text is None:
-        eprint(f"错误：本地备份也读不到：{args.backup}")
-        return 2
+        # 首次生成时备份还不存在，按空清单处理，不是错误。
+        backup_text = ""
     backup_items = parse_items(backup_text)
     records = previous_records(backup_text)
 
