@@ -30,8 +30,17 @@ KNOWN_TOP_DIRS = [
     "05-课件与文本",
     "06-工具与提示词",
     "07-培训研修",
+    "08-网络资源",
     "99-待处理",
 ]
+
+# 受保护存档目录：路径中任意一段命中即视为已归档，不参与整理/移动/改名
+PROTECTED_ARCHIVE_DIRS = ("弃用教案", "原教案-旧版")
+
+# 教资面试备考：受确认的成套资料目录。根级放核心交付（00–07），
+# 逐日学习包按四阶段放进「阶段X-…」子文件夹（.docx 在阶段根级、.md 在阶段内 md文件/）。
+INTERVIEW_ROOT = "教资面试备考"
+INTERVIEW_PHASE_PREFIX = "阶段"
 
 CHAPTERS = [
     "第十三章-内能",
@@ -61,6 +70,8 @@ def category_of(name: str, ext: str):
         return ("03-成绩", "raw")
     if ext == ".enbx":
         return ("05-课件与文本", "courseware")
+    if ext == ".py":
+        return ("06-工具与提示词", "tutorial")
     if "成绩分析" in name or "质量分析" in name or "分析报告" in name:
         return ("03-成绩", "analysis")
     if "教学计划" in name or "实验教学开课" in name or "实验教学计划" in name or "进度安排" in name:
@@ -77,8 +88,14 @@ def category_of(name: str, ext: str):
         return ("06-工具与提示词", "prompt")
     if "DeepSeek" in name or "WSL" in name or "OpenViking服务" in name or "教程" in name or "安装" in name:
         return ("06-工具与提示词", "tutorial")
+    if "教资面试" in name:
+        return ("07-培训研修", "interview")
     if any(k in name for k in ["师德", "培训", "学习文件", "心得", "体会", "家庭教育", "未成年人", "教师职业"]):
         return ("07-培训研修", "training")
+    if "同步优学" in name or "金学典" in name:
+        return ("08-网络资源", "sync")
+    if "板书设计" in name:
+        return ("08-网络资源", "blackboard")
     return (None, None)
 
 
@@ -121,6 +138,13 @@ def target_for(rel_path: str):
             return f"06-工具与提示词/教程/md文件/{name}"
         if sub == "prompt":
             return f"06-工具与提示词/提示词/md文件/{name}"
+        if sub == "sync":
+            folder = "08-网络资源/同步优学/九年级上册" + (f"/{ch}" if ch else "")
+            return f"{folder}/md文件/{name}"
+        if sub == "blackboard":
+            return f"08-网络资源/板书设计参考/md文件/{name}"
+        if sub == "interview":
+            return f"07-培训研修/{INTERVIEW_ROOT}/md文件/{name}"
         if sub == "training":
             if "心得" in name or "体会" in name:
                 return f"07-培训研修/心得体会/md文件/{name}"
@@ -156,11 +180,38 @@ def target_for(rel_path: str):
         return f"06-工具与提示词/教程/{name}"
     if sub == "prompt":
         return f"06-工具与提示词/提示词/{name}"
+    if sub == "sync":
+        folder = "08-网络资源/同步优学/九年级上册" + (f"/{ch}" if ch else "")
+        return f"{folder}/{name}"
+    if sub == "blackboard":
+        return f"08-网络资源/板书设计参考/{name}"
+    if sub == "interview":
+        return f"07-培训研修/{INTERVIEW_ROOT}/{name}"
     if sub == "training":
         if "心得" in name or "体会" in name:
             return f"07-培训研修/心得体会/{name}"
         return f"07-培训研修/学习文件/{name}"
     return f"99-待处理/{name}"
+
+
+def interview_prep_ok(rel_path: str) -> bool:
+    """教资面试备考目录内的落位校验：根级核心交付 + 四阶段逐日学习包。"""
+    parts = rel_path.split("/")
+    if len(parts) < 3:
+        return False
+    name = parts[-1]
+    ext = os.path.splitext(name)[1].lower()
+    if name == "README.md":
+        return True
+    if len(parts) == 3:                      # 备考根级：核心交付件
+        return ext in (".docx", ".doc")
+    if len(parts) == 4 and parts[2] == "md文件":   # 备考根级 md
+        return ext == ".md"
+    if len(parts) == 4 and parts[2].startswith(INTERVIEW_PHASE_PREFIX):  # 阶段根级
+        return ext in (".docx", ".doc")
+    if len(parts) == 5 and parts[2].startswith(INTERVIEW_PHASE_PREFIX) and parts[3] == "md文件":
+        return ext == ".md"
+    return False
 
 
 def is_correct(rel_path: str) -> bool:
@@ -169,15 +220,21 @@ def is_correct(rel_path: str) -> bool:
     name = parts[-1]
     if name == "README.md":
         return True
+    if any(p in PROTECTED_ARCHIVE_DIRS for p in parts):
+        return True
     top = parts[0]
     if top.startswith("."):
         return True
     if top in ("00-模板与规范", "99-待处理"):
         return True
+    if top == "08-网络资源":
+        return True
 
     ext = os.path.splitext(name)[1].lower()
 
     if top == "07-培训研修":
+        if len(parts) >= 2 and parts[1] == INTERVIEW_ROOT:
+            return interview_prep_ok(rel_path)
         return len(parts) >= 3 and parts[1] in ("学习文件", "心得体会")
 
     if top == "01-教学计划":
@@ -219,6 +276,8 @@ def is_correct(rel_path: str) -> bool:
         return False
 
     if top == "06-工具与提示词":
+        if ext == ".py":
+            return len(parts) == 3 and parts[1] == "教程"
         if "历史版本" in rel_path and ext in (".md", ".bak"):
             return len(parts) >= 5 and parts[2] == "历史版本" and parts[3] == "md文件"
         if len(parts) >= 2 and parts[1] == "教程":
