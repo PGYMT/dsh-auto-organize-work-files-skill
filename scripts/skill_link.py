@@ -7,7 +7,7 @@
 
 命令：
   link     建立或修复软链（旧实体目录移到备份区，不删除）
-  verify   校验软链、权威源与 SKILL.md 是否有效
+  verify   校验软链、权威源与 SKILL.md 是否有效，并检查项目级同名副本
   backup   把权威源导出成自包含备份
   restore  从远端重新克隆缺失的权威源，再重建软链
 
@@ -36,6 +36,7 @@ SKILLS = {
 }
 DEFAULT_SKILLS_HOME = os.path.expanduser("~/.dsh/skills")
 DEFAULT_BACKUP_DIR = "/root/skill-backups"
+DEFAULT_SHADOW_ROOT = "/root/dsh-workspace"
 
 
 def eprint(*a):
@@ -59,6 +60,34 @@ def skill_version(repo):
 
 def stamp():
     return dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def project_roots(shadow_root):
+    """把 shadow_root 本身和它的直接子目录都当作候选项目根。"""
+    roots = [shadow_root]
+    try:
+        entries = sorted(os.scandir(shadow_root), key=lambda e: e.name)
+    except OSError as ex:
+        eprint(f"提示：无法列出 {shadow_root}（{ex}）")
+        return roots
+    roots += [e.path for e in entries if e.is_dir(follow_symlinks=False)]
+    return roots
+
+
+def shadow_problems(name, spec, shadow_root):
+    """项目级同名副本会抢在用户级软链之前生效，必须为 0。"""
+    found = []
+    for root in project_roots(shadow_root):
+        for sub in (".dsh/skills", ".agents/skills"):
+            cand = os.path.join(root, sub, name)
+            if not os.path.lexists(cand):
+                continue
+            if os.path.islink(cand):
+                if os.path.realpath(cand) != os.path.realpath(spec["repo"]):
+                    found.append((cand, f"软链指向别处 {os.path.realpath(cand)}"))
+            else:
+                found.append((cand, "实体副本会抢在用户级软链之前生效"))
+    return found
 
 
 def link_one(name, spec, skills_home, backup_dir):
@@ -85,11 +114,15 @@ def link_one(name, spec, skills_home, backup_dir):
     return 0
 
 
-def verify(skills, skills_home):
+def verify(skills, skills_home, shadow_root=""):
     problems = 0
     for name, spec in sorted(skills.items()):
         link = os.path.join(skills_home, name)
         repo = spec["repo"]
+        if shadow_root:
+            for path, why in shadow_problems(name, spec, shadow_root):
+                eprint(f"[FAIL] {name}：项目级副本 {path}（{why}）")
+                problems += 1
         if not os.path.islink(link):
             eprint(f"[FAIL] {name}：运行入口不是软链（{link}）")
             problems += 1
@@ -152,6 +185,8 @@ def main(argv=None):
     ap.add_argument("--skills-home", default=DEFAULT_SKILLS_HOME)
     ap.add_argument("--backup-dir", default=DEFAULT_BACKUP_DIR)
     ap.add_argument("--only", default="", help="只处理这些技能，逗号分隔；默认全部")
+    ap.add_argument("--shadow-root", default=DEFAULT_SHADOW_ROOT,
+                    help="检查项目级同名副本的根目录；传空字符串可跳过")
     args = ap.parse_args(argv)
     wanted = [x.strip() for x in args.only.split(",") if x.strip()]
     skills = {k: v for k, v in SKILLS.items() if not wanted or k in wanted}
@@ -162,7 +197,7 @@ def main(argv=None):
         os.makedirs(args.backup_dir, exist_ok=True)
         problems = sum(link_one(n, s, args.skills_home, args.backup_dir) for n, s in sorted(skills.items()))
     elif args.cmd == "verify":
-        problems = verify(skills, args.skills_home)
+        problems = verify(skills, args.skills_home, args.shadow_root)
     elif args.cmd == "backup":
         os.makedirs(args.backup_dir, exist_ok=True)
         problems = backup(skills, args.backup_dir)

@@ -3,7 +3,7 @@ name: auto-organize-work-files
 description: Use when writing, moving, renaming or deleting any file inside an enabled document workspace (currently only 工作文件), and after any change in that workspace. Ask the target path before writing and verify after writing; run the rule lint after changing rules or another skill's output file names; keep the shared checklist in sync with its backup. Never operates on code repositories, $DSH_HOME, or unregistered workspaces.
 ---
 
-# 工作文件自动整理（v4 · 流程版）
+# 工作文件自动整理（v4.1 · 流程版）
 
 ## 适用范围
 
@@ -69,6 +69,8 @@ plan 与 check 走同一套判断，不存在“一边说合法、一边说要�
 - 备份：教案技能的 references/联动判断清单.local.md。
 - 比对：scripts/sync_checklist.py，改任一边之前和之后各跑一次。
 - 四种结果：全同直接用；只差条目自动整合；同编号正文不同就停下报人；权威读不到用备份。
+- 退出码：0 ＝ 一致或已整合；1 ＝ 有冲突（停下报人）；2 ＝ 用法或备份读不到；3 ＝ 权威源读不到、已用本地备份（不算失败）。
+- 同编号正文不同＝冲突，脚本默认停下；确认是权威源的正常更新后，加 --accept-authority 重跑即可采用。
 
 ## 技能文件与运行位置
 
@@ -76,6 +78,7 @@ plan 与 check 走同一套判断，不存在“一边说合法、一边说要�
 - 运行入口：~/.dsh/skills/auto-organize-work-files，是指向权威源的软链接。
 - 只改权威源；运行入口由 scripts/skill_link.py 维护，不直接编辑。
 - 自包含备份：scripts/skill_link.py backup 导出到 /root/skill-backups/。
+- verify 除了查软链，还会检查项目级不得有同名实体副本（会抢在软链之前生效）。
 
 ## 禁止
 
@@ -87,5 +90,6 @@ plan 与 check 走同一套判断，不存在“一边说合法、一边说要�
 
 | 版本 | 日期 | 改动摘要 |
 |---|---|---|
+| v4.1 | 2026-09-27 | ①文档写清 sync_checklist.py 的四种退出码（含 3 ＝ 权威源读不到、用了备份）；②新增 --accept-authority：确认权威源更新后可采用，避免备份永远无法更新；③skill_link.py verify 新增“项目级不得有同名实体副本”检查 |
 | v4 | 2026-09-27 | 统一 resolve（显式声明 > 有主之树 > 名称规则 > 收件箱）；plan 新增 --dest；规则新增 exclude 与 [owned]；新增 lint 与样本语料；新增联动判断清单、sync_checklist.py、skill_link.py；权威源改为独立仓库 + 软链 |
 | v3 | — | 流程版：plan / check / apply / undo / archive / selftest / validate |

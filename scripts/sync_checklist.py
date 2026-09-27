@@ -6,6 +6,7 @@
 两者都读不到时打印“连不上”，直接用本地备份干活。
 
 退出码：0 一致或已整合；1 有冲突（停下报人）；3 权威源读不到（用了备份）。
+同编号正文不同＝冲突，默认停下；确认是权威源的正常更新后，用 --accept-authority 采用权威源。
 """
 
 from __future__ import annotations
@@ -94,6 +95,8 @@ def main(argv=None):
     ap.add_argument("--url", default=DEFAULT_URL)
     ap.add_argument("--no-url", action="store_true", help="不联网，只读本地权威源")
     ap.add_argument("--apply", action="store_true", help="把结果写回本地备份")
+    ap.add_argument("--accept-authority", action="store_true",
+                    help="同编号正文不同时，按权威源覆盖备份（人工确认后使用）")
     args = ap.parse_args(argv)
 
     backup_text = read_text(args.backup)
@@ -135,18 +138,20 @@ def main(argv=None):
         print(f"    备份：{backup_items[k]}")
 
     stamp = dt.datetime.now().isoformat(timespec="seconds")
-    if conflict:
+    if conflict and not args.accept_authority:
         verdict = f"- {stamp} 冲突 {len(conflict)} 条，未自动整合（权威源 {source}）"
         records.append(verdict)
         print("结论：有冲突，停下等人工决定；未改动本地备份。")
         if args.apply:
-            eprint("提示：有冲突时不写备份，避免掩盖分歧。")
+            eprint("提示：有冲突时不写备份；确认是权威源的正常更新后，加 --accept-authority 重跑。")
         return 1
+    if conflict:
+        print(f"提示：{len(conflict)} 条同编号正文不同，已按 --accept-authority 采用权威源。")
 
-    merged = same + added
     verdict = (f"- {stamp} 已整合（权威源 {source}；相同 {len(same)}，并入 {len(added)}，"
-               f"仅备份保留 {len(backup_only)}）")
-    print("结论：" + ("一致，无需改动。" if not diff else f"只有差别，已可自动整合（{len(added)} 条并入）。"))
+               f"更新 {len(conflict)}，仅备份保留 {len(backup_only)}）")
+    print("结论：" + ("一致，无需改动。" if not diff and not conflict
+                     else f"已整合（并入 {len(added)} 条，更新 {len(conflict)} 条）。"))
     if args.apply:
         records.append(verdict)
         text = build_backup(authority_items, backup_only, source,

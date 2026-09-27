@@ -1,6 +1,6 @@
 # dsh-auto-organize-work-files-skill
 
-`工作文件` 工作区的自动整理 Skill（v4，2026-09-27）。
+`工作文件` 工作区的自动整理 Skill（v4.1，2026-09-27）。
 
 规则不写死在脚本里，由工作区自己的 `.organize/rules.toml` 决定；脚本默认**只核对、不搬运**；归档/免打扰靠标记文件；拿不准的进收件箱。
 
@@ -67,18 +67,21 @@
 - 权威源：`references/联动判断清单.md`（本仓库）。
 - 本地备份：教案技能的 `references/联动判断清单.local.md`，由 `scripts/sync_checklist.py` 生成，禁止手改。
 - 比对：`python3 scripts/sync_checklist.py --apply`。全同或只差条目会整合；同编号正文不同＝冲突，停下报人；权威源读不到＝用本地备份。
+- 退出码：0 ＝ 一致或已整合；1 ＝ 有冲突；2 ＝ 用法或备份读不到；3 ＝ 权威源读不到、已用本地备份（不算失败）。
+- 同编号正文不同＝冲突，默认停下；确认是权威源的正常更新后，加 `--accept-authority` 重跑即可采用。
 
 ## 权威源与运行入口
 
 - 权威源：`/root/skill-repos/auto-organize`（本仓库的本地克隆），技能内容只在这里改。
 - 运行入口：`~/.dsh/skills/auto-organize-work-files`，是指向权威源的软链接。
 - 维护：`python3 scripts/skill_link.py link|verify|backup|restore`（`--only <技能名>` 可只处理一个）。
+- verify 会检查项目级不得有同名实体副本（`--shadow-root` 默认 /root/dsh-workspace）；实体副本会抢在用户级软链之前生效。
 
 ## 目录结构
 
 ```text
 .
-├── SKILL.md                  # Skill 主文件（流程版 v4）
+├── SKILL.md                  # Skill 主文件（流程版 v4.1）
 ├── references/
 │   └── 联动判断清单.md        # 与教案技能共用的权威清单
 ├── scripts/
