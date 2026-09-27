@@ -1,10 +1,14 @@
 # 新工作区的规则模板：复制成 <工作区>/.organize/rules.toml 后按需修改。
-# 改规则：先加 examples → 跑 selftest → 跑 check。
+# 改规则：先加 examples + samples → 跑 selftest → 跑 lint → 跑 check。
 
 [general]
 inbox = "99-待处理/收件箱"
 archive_marker = ".archived"
 skip = ["**/__pycache__/**", "**/vendor/**", "**/*.pyc", "**/*.dist-info/**", "**/*.libs/**"]
+
+[owned]
+# 有主之树：这些顶层目录由各自流程自己管，整理脚本对其内部文件一律“就地不动”。
+# 脚本内置三棵始终豁免：00-模板与规范、99-待处理、08-网络资源；本节用来补充和说明。
 
 [chapters]
 # "第X章-名称" = ["第X章", "X.1", "X.2", "关键词"]
@@ -14,6 +18,8 @@ id = "R-示例"
 locations = ["**"]
 filter = { name = "示例关键词", ext = [".md", ".docx"] }
 action = { target = "01-示例目录", md_to = "md文件" }
+# exclude：这条规则不管的路径。多个目录争抢同一个名字时，用它划清界线。
+exclude = ["05-课件与文本/**"]
 examples = [
   { file = "示例关键词-说明.md", to = "01-示例目录/md文件" },
 ]

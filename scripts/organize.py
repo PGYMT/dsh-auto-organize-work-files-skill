@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""工作文件自动整理引擎 v2。
+"""工作文件自动整理引擎 v4。
 
-只读命令：plan / check / selftest / validate / dsh-official
+只读命令：plan / check / lint / selftest / validate / dsh-official
 会改磁盘：apply / undo / archive（都必须显式调用）
 """
 
@@ -20,6 +20,7 @@ import tomllib
 
 DEFAULT_REGISTRY = os.path.expanduser("~/.dsh/storages/auto-organize/registry.toml")
 RULES_REL = ".organize/rules.toml"
+SAMPLES_REL = ".organize/samples.toml"
 REPORTS_REL = ".organize/reports"
 JOURNAL_REL = ".organize/journal"
 LOCK_REL = ".organize/lock"
@@ -30,6 +31,9 @@ SKIP_DIR_SUFFIXES = (".dist-info", ".libs")
 SKIP_FILE_SUFFIXES = (".pyc", ".pyo", ".lock", ".tmp")
 SKIP_FILE_NAMES = {".DS_Store", "Thumbs.db", "AGENTS.md", "CLAUDE.md",
                    "AGENTS.local.md", "CLAUDE.local.md"}
+# 有主之树：这些顶层目录由各自流程自己管，整理脚本对其内部文件一律放过。
+# 可在工作区 rules.toml 的 [owned] 段补充更多；内置三棵始终豁免。
+OWNED_TOP_NAMES = ("00-模板与规范", "99-待处理", "08-网络资源")
 OFFICIAL_DSH_NAMES = ["AGENTS.md", "CLAUDE.md", "AGENTS.local.md", "CLAUDE.local.md",
                       ".git", ".dsh", ".dsh-module-fallback", "node_modules",
                       "__pycache__", "vendor"]
@@ -138,7 +142,7 @@ def structurally_ok(rel):
     top = parts[0]
     name = parts[-1]
     ext = os.path.splitext(name)[1].lower()
-    if name == "README.md" or top in ("00-模板与规范", "99-待处理", "08-网络资源"):
+    if name == "README.md" or top in OWNED_TOP_NAMES:
         return True
     if top in ("01-教学计划", "02-培优辅潜"):
         if ext == ".md":
@@ -218,6 +222,9 @@ def rule_matches(rule, name, ext, rel):
     nn = f.get("not_name")
     if nn and re.search(nn, name):
         return False
+    for p in rule.get("exclude") or []:
+        if fnmatch.fnmatch(rel, str(p)):
+            return False
     return True
 
 
@@ -242,23 +249,74 @@ def classify(name, rel, config):
     return None
 
 
+def owned_tops(config):
+    """有主之树的顶层目录名集合：内置三棵 + 工作区 [owned] 段补充的。"""
+    owned = config.get("owned") or {}
+    return set(OWNED_TOP_NAMES) | {str(k) for k in owned.keys()}
+
+
+def validate_dest(dest, name, workspace):
+    """校验显式声明目的地；合法返回 None，否则返回不合法原因。"""
+    raw = str(dest)
+    d = raw.replace(os.sep, "/").strip().strip("/")
+    if not d:
+        return "声明为空"
+    if raw.startswith("/"):
+        return "声明不能用绝对路径"
+    if any(part in ("", ".", "..") for part in d.split("/")):
+        return "声明里不能有 . 或 .."
+    if d.split("/")[0].startswith("."):
+        return "声明不能指向隐藏目录"
+    if workspace and os.path.exists(os.path.join(workspace, d, name)):
+        return f"目标已存在同名文件：{d}/{name}"
+    return None
+
+
+def resolve(name, rel, dest, config, workspace=""):
+    """四步判断去向：显式声明 > 有主之树/已合规 > 名称规则 > 收件箱。"""
+    general = config.get("general") or {}
+    inbox = str(general.get("inbox", "99-待处理/收件箱")).strip("/")
+    if dest:
+        reason = validate_dest(dest, name, workspace)
+        if reason is None:
+            d = str(dest).replace(os.sep, "/").strip().strip("/")
+            return {"action": "move", "target": f"{d}/{name}", "rule": "声明",
+                    "reason": "生产方显式声明", "confidence": "high", "severity": "warn"}
+        fallback = resolve(name, rel, "", config, workspace)
+        fallback["dest_error"] = reason
+        fallback["reason"] = f"声明不合法（{reason}），退回规则判断"
+        return fallback
+    top = rel.split("/")[0] if rel else ""
+    if top in owned_tops(config):
+        return {"action": "stay", "target": rel, "rule": "有主之树",
+                "reason": f"{top} 由对应流程自己管理", "confidence": "high",
+                "severity": "warn"}
+    if structurally_ok(rel):
+        return {"action": "stay", "target": rel, "rule": "就地",
+                "reason": "已在规范目录结构里", "confidence": "high", "severity": "warn"}
+    info = classify(name, rel, config)
+    if info is not None:
+        return {"action": "move", **info}
+    return {"action": "inbox", "target": f"{inbox}/{name}", "rule": "无",
+            "reason": "没有命中的规则，建议进收件箱", "confidence": "low",
+            "severity": "warn"}
+
+
 def scan(workspace, config):
     general = config.get("general") or {}
     extra = list(general.get("skip") or [])
     inbox = str(general.get("inbox", "99-待处理/收件箱")).strip("/")
     planned, unknown = [], []
     for full, rel in walk_files(workspace, extra):
-        if structurally_ok(rel):
+        decision = resolve(os.path.basename(rel), rel, None, config, workspace)
+        if decision["action"] == "stay":
             continue
-        info = classify(os.path.basename(rel), rel, config)
-        if info is None:
+        if decision["action"] == "inbox":
             unknown.append(rel)
             continue
-        if rel == info["target"].strip("/"):
-            continue
         st = os.stat(full)
-        planned.append({"source": rel, "target": info["target"].strip("/"),
-                        "rule": info["rule"], "severity": info["severity"],
+        planned.append({"source": rel, "target": decision["target"].strip("/"),
+                        "rule": decision["rule"], "severity": decision["severity"],
                         "size": st.st_size, "mtime": int(st.st_mtime)})
     grouped = {}
     for item in planned:
@@ -316,22 +374,16 @@ def write_report(workspace, result):
 
 
 def cmd_plan(args, config):
-    general = config.get("general") or {}
-    inbox = str(general.get("inbox", "99-待处理/收件箱")).strip("/")
     name = args.name
     rel = (args.dir.replace(os.sep, "/").strip("/") + "/" + name) if args.dir else name
-    info = classify(name, rel, config)
-    if info is None:
-        print(f"目标：{inbox}/{name}")
-        print("规则：无（拿不准）")
-        print("把握度：低")
-        print("理由：没有命中的规则，建议进收件箱")
-        return 0
-    print(f"目标：{info['target']}")
-    print(f"规则：{info['rule']}")
-    print(f"把握度：{info['confidence']}")
-    print(f"理由：{info['reason']}")
-    return 0
+    decision = resolve(name, rel, getattr(args, "dest", ""), config, args.workspace or "")
+    if decision.get("dest_error"):
+        eprint(f"声明不合法：{decision['dest_error']}")
+    print(f"目标：{decision['target']}")
+    print(f"规则：{decision['rule']}")
+    print(f"把握度：{decision['confidence']}")
+    print(f"理由：{decision['reason']}")
+    return 1 if decision.get("dest_error") else 0
 
 
 def cmd_check(args, config):
@@ -350,6 +402,38 @@ def cmd_check(args, config):
         print(f"报告：{write_report(args.workspace, result)}")
     has_error = any(x.get("severity") == "error" for x in result["moves"] + result["conflicts"])
     return 3 if has_error else 0
+
+
+def cmd_lint(args, config):
+    """规则体检：用样本文件名跑一遍，找出误判、多规则争抢与拿不准。"""
+    data = read_toml(os.path.join(args.workspace, SAMPLES_REL), "样本清单")
+    samples = data.get("samples") or []
+    rules = config.get("rules") or []
+    ok = fail = grabbed = 0
+    for s in samples:
+        fn = os.path.basename(str(s.get("file", "")))
+        d = str(s.get("dir", "")).replace(os.sep, "/").strip("/")
+        rel = (d + "/" + fn) if d else fn
+        expect = str(s.get("expect", "")).replace(os.sep, "/").strip("/")
+        declared = str(s.get("dest", "")).replace(os.sep, "/").strip("/")
+        decision = resolve(fn, rel, declared, config, args.workspace)
+        actual = os.path.dirname(decision["target"]).strip("/")
+        ext = os.path.splitext(fn)[1].lower()
+        hits = [r.get("id", "?") for r in rules if rule_matches(r, fn, ext, rel)]
+        if len(hits) > 1:
+            targets = {str((r.get("action") or {}).get("target", "")) for r in rules
+                       if r.get("id") in hits}
+            if len(targets) > 1:
+                grabbed += 1
+                print(f"争抢：{rel} 同时命中 {'、'.join(hits)}")
+        if actual == expect:
+            ok += 1
+        else:
+            fail += 1
+            print(f"FAIL：{rel}（声明 {declared or '无'}）"
+                  f"期望 {expect or '根级'}，实际 {actual or '根级'}")
+    print(f"lint：样本 {len(samples)} 条，通过 {ok}，不符 {fail}，多规则争抢 {grabbed}")
+    return 1 if (fail or grabbed) else 0
 
 
 def cmd_apply(args, config):
@@ -515,18 +599,21 @@ def add_common(sp):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    subs = {"plan", "check", "apply", "undo", "archive", "selftest", "validate", "dsh-official"}
+    subs = {"plan", "check", "lint", "apply", "undo", "archive", "selftest",
+            "validate", "dsh-official"}
     if argv and argv[0] not in subs:
         if "--check" in argv:
             argv = ["check"] + [a for a in argv if a != "--check"]
         elif "--apply" in argv:
             argv = ["apply"] + [a for a in argv if a != "--apply"]
-    parser = argparse.ArgumentParser(description="工作文件自动整理引擎 v2")
+    parser = argparse.ArgumentParser(description="工作文件自动整理引擎 v4")
     common = argparse.ArgumentParser(add_help=False)
     add_common(common)
     sub = parser.add_subparsers(dest="cmd")
-    sp = sub.add_parser("plan", parents=[common]); sp.add_argument("--name", required=True); sp.add_argument("--dir", default="")
+    sp = sub.add_parser("plan", parents=[common]); sp.add_argument("--name", required=True)
+    sp.add_argument("--dir", default=""); sp.add_argument("--dest", default="")
     sc = sub.add_parser("check", parents=[common]); sc.add_argument("--no-report", action="store_true")
+    sub.add_parser("lint", parents=[common])
     sa = sub.add_parser("apply", parents=[common])
     sa.add_argument("--dry-run", action="store_true"); sa.add_argument("--from-report", default="")
     sa.add_argument("--prune-empty", action="store_true")
@@ -554,6 +641,8 @@ def main(argv=None):
         return cmd_plan(args, config)
     if args.cmd == "check":
         return cmd_check(args, config)
+    if args.cmd == "lint":
+        return cmd_lint(args, config)
     if args.cmd == "apply":
         return cmd_apply(args, config)
     if args.cmd == "undo":
