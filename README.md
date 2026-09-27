@@ -1,41 +1,66 @@
 # dsh-auto-organize-work-files-skill
 
-自动整理 `工作文件/` 工作区文件的 Skill，按“文件整理规范”自动归类，保证业务文件不散落在根目录。
+`工作文件` 工作区的自动整理 Skill（v2，2026-09-27 重写）。
 
-## 功能特点
+核心变化：**规则不再写死在脚本里**，改由工作区自己的 `.organize/rules.toml` 决定；脚本默认**只核对、不搬运**；归档/免打扰靠标记文件；拿不准的进收件箱。
 
-- **只操作 `工作文件/` 工作区**
-- 按预设规范自动归类：教学计划、成绩分析、教案、课件与文本、工具与提示词、培训研修等
-- 禁止修改其他工作区、系统目录、隐藏目录、`.git`、`.dsh` 以及 Skill 自身文件
-- 根目录只保留 `README.md` 作为总索引
-- 包含辅助脚本 `scripts/organize.py`
+## 四个动作
 
-## 触发条件
+1. 写文件前先问路（plan），按算出的路径写；拿不准的进 `99-待处理/收件箱/`。
+2. 写完核对（check），出现“放错”当轮改正。
+3. 要搬文件，先把核对结果给人看，人同意后才搬（apply）；搬了有日志、可 undo。
+4. 要归档或免打扰一个目录，盖 `.archived` 或放 `.organize-ignore` 标记。
 
-以下任一情况应按本 Skill 执行：
+## 适用范围（多工作区）
 
-- 在 `工作文件/` 工作区中新建、修改或移动文件后
-- 用户要求“整理工作区 / 按规范整理 / 自动归类”
-- 工作区根目录出现散落的业务文件时
+- 哪些工作区启用，由 `~/.dsh/storages/auto-organize/registry.toml` 决定（`kind = documents` 且 `enabled = true`）。
+- 代码仓库（含 `.git`）、DSH 运行数据（`$DSH_HOME`）、未登记的工作区一律拒绝。
+- 每个工作区各有一份 `.organize/rules.toml` 和 `AGENTS.md`，互不影响。
 
-## 使用方法
+## 命令
 
-1. 将本 Skill 放入支持 Skill 的 Agent 环境中，例如 `.agents/skills/` 目录。
-2. 当 Agent 在 `工作文件/` 工作区操作时，会自动遵守本 Skill 的整理规则。
-3. 也可直接运行 `scripts/organize.py` 辅助脚本进行文件归类。
+问路：
+
+    python3 scripts/organize.py plan --name "<文件名>" --workspace "<工作区>"
+
+核对：
+
+    python3 scripts/organize.py check --workspace "<工作区>"
+
+演习搬运：
+
+    python3 scripts/organize.py apply --dry-run --workspace "<工作区>"
+
+按报告搬运（人工确认后）：
+
+    python3 scripts/organize.py apply --from-report "<报告.json>" --workspace "<工作区>"
+
+撤回：
+
+    python3 scripts/organize.py undo --workspace "<工作区>"
+
+自检 / 准入 / DSH 官方名对照：
+
+    python3 scripts/organize.py selftest --workspace "<工作区>"
+
+    python3 scripts/organize.py validate --workspace "<工作区>"
+
+    python3 scripts/organize.py dsh-official --workspace "<工作区>"
 
 ## 目录结构
 
 ```text
 .
-├── SKILL.md            # Skill 主文件
+├── SKILL.md                  # Skill 主文件（流程版）
 ├── scripts/
-│   └── organize.py     # 文件整理辅助脚本
-└── README.md           # 本说明
+│   ├── organize.py           # 引擎（v2）
+│   └── rules.example.toml    # 新工作区规则模板
+└── README.md                 # 本说明
 ```
 
 ## 安全边界
 
-- 仅允许操作 `工作文件/` 工作区。
-- 若当前目录或目标路径不在 `工作文件/` 内，本 Skill 不执行任何整理，并提示用户。
-- 不得修改其他工作区、系统目录、隐藏目录、`.git`、`.dsh`、Skill 自身文件。
+- 不删除任何文件；不覆盖同名文件（冲突只报告）。
+- 一次只处理一个工作区；目标路径必须落在该工作区内。
+- 跳过清单（遍历阶段生效）：以 `.` 开头的目录/文件、`node_modules`、`__pycache__`、`vendor`、`*.dist-info`、`*.libs`、`*.pyc`、`*.tmp`、符号链接，以及 `AGENTS.md`/`CLAUDE.md` 等 DSH 说明文件。
+- `apply` 默认关闭，必须显式调用并按报告点名搬运。

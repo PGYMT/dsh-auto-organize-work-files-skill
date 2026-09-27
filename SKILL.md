@@ -1,149 +1,54 @@
 ---
 name: auto-organize-work-files
-description: Use when working in the 工作文件 workspace, when files in that workspace have changed, before writing any file into it, or when the user asks to organize/整理工作区/按规范整理. Keeps files auto-classified according to the workspace file organization spec. Only operates on the 工作文件 workspace; it must never touch other workspaces.
+description: Use when writing, moving, renaming or deleting any file inside an enabled document workspace (currently only 工作文件), and after any change in that workspace. Ask the target path before writing and verify after writing. Never operates on code repositories, $DSH_HOME, or unregistered workspaces.
 ---
 
-# 工作文件自动整理 Skill
+# 工作文件自动整理（v3 · 流程版）
 
-本 Skill 用于维护 `工作文件/` 工作区的文件归类，保证业务文件不散落在根目录，并按“详细文件整理规范”落位。
+## 适用范围
 
-## 范围与安全边界
+- 本技能支持多工作区：每个工作区自带 .organize/rules.toml 与 AGENTS.md，互不影响。
+- 哪些工作区启用，由 ~/.dsh/storages/auto-organize/registry.toml 决定（kind = documents 且 enabled = true）。
+- 当前只启用「工作文件」一个工作区；其他工作区、代码仓库（含 .git）、DSH 运行数据（$DSH_HOME）一律不操作，先拒绝并说明。
+- 所有命令必须带 --workspace，且该路径必须在注册表内；报告必须写明工作区路径。
 
-- **只允许操作 `工作文件/` 工作区**。
-- 若当前目录或目标路径不在 `工作文件/` 内，本 Skill **不执行任何整理**，并提示用户“该 Skill 仅适用于工作文件工作区”。
-- 不得修改其他工作区、系统目录、隐藏目录、`.git`、`.dsh`、Skill 自身文件。
-- 根目录只保留 `README.md` 作为总索引。
+## 四个动作
 
-## 触发条件
+1. 写文件前先问路（plan），按它给的路径写；拿不准的进 99-待处理/收件箱/。
+2. 写完核对（check），出现“放错”当轮改正。
+3. 要搬文件，先把核对结果给人看，人同意后才搬（apply）；搬了有日志、可 undo。
+4. 要归档或免打扰一个目录，用 archive 盖 .archived，或放 .organize-ignore；不要靠改文件夹名。
 
-以下任一情况都必须遵循本 Skill：
+## 命令
 
-1. 用户要求“整理工作区 / 分类文件 / 按规范写入”；
-2. 本次操作会在 `工作文件/` 中创建、写入、移动、重命名或删除文件；
-3. 发现 `工作文件/` 根目录出现散落业务文件；
-4. 任何一次涉及 `工作文件/` 的文件操作完成后，必须执行整理核对。
+问路：
 
-## 核心原则
+    python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py plan --name "<文件名>" --workspace "<工作区>"
 
-1. `.md` 源稿统一放入对应业务目录的 `md文件/` 子目录。
-2. `.docx`、`.enbx`、`.xlsx` 等交付/原始文件放在对应业务目录根级。
-3. 同一份内容若同时存在 `.md` 与 `.docx`，必须同时归档，不能只放一个。
-4. 新章节先创建章节子目录，再放入文件。
-5. 无法判断归属的文件先放 `99-待处理/`，并提示人工确认。
-6. `README.md` 索引只保留在目录根级，不进入 `md文件/`。
-7. **受保护存档目录**：路径中任意一段为 `弃用教案` 或 `原教案-旧版` 的文件，一律视为已归档，**不移动、不改名、不转存**。
-8. **网络资源目录**：`08-网络资源/` 及其子目录视为已归档，整理脚本不移动；新下载的网络资料按“类型/章节”放入对应子目录（如 `08-网络资源/同步优学/九年级上册/第十五章-电流和电路/`）。
+核对：
 
-9. **教资面试备考成套目录**：`07-培训研修/教资面试备考/` 是受确认的成套资料。核心交付（00–07）的 `.docx` 在备考根级、`.md` 在 `md文件/`；逐日学习包按四阶段放入 `阶段X-…/`（`.docx` 在阶段根级、`.md` 在阶段内 `md文件/`）。以上位置均视为已归档，不移动。
+    python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py check --workspace "<工作区>"
 
-## 分类规则表
+演习搬运：
 
-按文件名关键词优先匹配；优先级从高到低：
+    python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py apply --dry-run --workspace "<工作区>"
 
-| 优先级 | 关键词/特征 | 目标目录 |
-|---|---|---|
-| 1 | 教学计划、实验教学开课计划、实验教学计划样表、进度安排 | `01-教学计划/` |
-| 2 | 培优辅潜 | `02-培优辅潜/` |
-| 3 | 成绩单、成绩表、期末成绩、考试、xlsx/csv 原始数据 | `03-成绩/原始数据/` |
-| 4 | 成绩分析、分析报告、质量分析 | `03-成绩/分析/` |
-| 5 | 教案、课时分配、大单元整合复习教案 | `04-教案/<章节>/` |
-| 6 | `.enbx`、原始课件 | `05-课件与文本/<章节>/原始课件/` |
-| 7 | 课件提取文本、课件文本、白板文本 | `05-课件与文本/<章节>/课件文本/md文件/` |
-| 8 | DeepSeek、WSL、OpenViking、教程、安装 | `06-工具与提示词/教程/` |
-| 9 | 提示词、Prompt、提示词规范 | `06-工具与提示词/提示词/` 或 `历史版本/md文件/` |
-| 10 | 师德、培训、学习文件、心得、体会、教资面试 | `07-培训研修/学习文件/`、`07-培训研修/心得体会/` 或 `07-培训研修/教资面试备考/` |
-| 11 | 同步优学、金学典、优秀教案/课件、板书设计参考等网络资料 | `08-网络资源/`（按类型/章节） |
-| 12 | 无法判断、文件名含义不明 | `99-待处理/` |
+按报告搬运（需人工确认后）：
 
-> **受保护存档**：路径中任意一段为 `弃用教案` 或 `原教案-旧版` 的文件，跳过整理（不移动、不改名）；存档目录内的同名旧版无需处理，仍保留在原目录。
+    python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py apply --from-report "<报告.json>" --workspace "<工作区>"
 
-## 章节目录映射
+撤回：
 
-| 文件中的章节关键词 | 章节目录 |
-|---|---|
-| 第十三章、内能、热量、比热容、分子动理论 | `第十三章-内能` |
-| 第十四章、内能的利用、热机 | `第十四章-内能的利用` |
-| 第十五章、电流、电路、串联、并联 | `第十五章-电流和电路` |
+    python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py undo --workspace "<工作区>"
 
-## 文件类型落位规则
+自检与准入：
 
-- `.md` → 对应业务目录的 `md文件/`
-- `.docx` → 对应业务目录根级
-- `.enbx` → `05-课件与文本/<章节>/原始课件/`
-- `.xlsx` / `.csv` 成绩数据 → `03-成绩/原始数据/`
-- `.bak` / 历史版本 → `06-工具与提示词/提示词/历史版本/md文件/`
-- `.py`（工具脚本）→ `06-工具与提示词/教程/`
-- `.doc` 按内容归类；不能判断时进 `99-待处理/`
-- `README.md` → 仅放目录根级，不进 `md文件/`
-- 教资面试备考：核心交付 `.docx` → `07-培训研修/教资面试备考/`，`.md` → 同目录 `md文件/`；逐日学习包按四阶段 → `07-培训研修/教资面试备考/阶段X-…/`（`.md` 进阶段内 `md文件/`）
+    python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py selftest --workspace "<工作区>"
 
-## 写入前工作流
+    python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py validate --workspace "<工作区>"
 
-1. 判断文件用途和文件名关键词，按“分类规则表”确定目标路径。
-2. 若同时生成 `.md` 与 `.docx`：
-   - `.md` 写入对应 `md文件/`；
-   - `.docx` 写入对应目录根级。
-3. 新章节先创建章节子目录。
-4. 无法判断时先写入 `99-待处理/`，并在交付说明中提示人工确认。
-5. 写入完成后运行整理脚本核对。
+## 禁止
 
-## 变动后工作流
-
-1. 运行安全预检：
-
-   ```bash
-   python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py \
-     --check \
-     --workspace "/root/dsh-workspace/工作文件"
-   ```
-
-2. 确认无冲突后执行：
-
-   ```bash
-   python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py \
-     --apply \
-     --workspace "/root/dsh-workspace/工作文件"
-   ```
-
-3. 若目标已存在同名文件：
-   - 不覆盖；
-   - 将新文件放入 `99-待处理/` 并加冲突后缀；
-   - 向用户报告冲突，等待人工决定。
-4. 受保护存档目录（`弃用教案/`、`原教案-旧版/`）内的文件不参与移动；存档内旧版与现行版同名时，按约定加 `-旧版` 后缀保留在原目录，不转存 `99-待处理/`。
-4b. `教资面试备考/` 及其四个 `阶段X-…/` 子目录视为已归档；`organize.py` 的 `interview_prep_ok()` 直接判为正确，不移动。
-4c. `08-网络资源/` 及其子目录视为已归档；`organize.py` 的 `is_correct()` 对顶层 `08-网络资源` 直接判为正确，不移动。
-5. 若新增/删除了顶层目录、章节目录或重要索引：
-   - 同步更新对应 `README.md`；
-   - 保持根目录 `README.md` 为总索引。
-6. 最后向用户报告整理结果。
-
-## 脚本行为
-
-`organize.py` 采用安全设计：
-
-- 仅处理显式指定的 `工作文件/` 工作区；
-- `--check` 只输出操作清单，不移动；
-- `--apply` 才执行移动；
-- 忽略 `README.md`、隐藏目录、`.dsh`、`.git`、Skill 脚本目录；
-- 忽略受保护存档目录 `弃用教案/`、`原教案-旧版/`（其内文件不移动）；
-- 忽略 `08-网络资源/`（顶层直接判为已归档）；
-- `教资面试备考/` 成套目录（核心交付 + 四阶段逐日学习包）直接判为已归档；
-- 同名不覆盖，冲突文件进 `99-待处理/`；
-- 无法判断归属的文件进 `99-待处理/`。
-
-## 禁止事项
-
-- 不得删除任何文件。
-- 不得移动其他工作区的文件。
-- 不得修改不属于 `工作文件/` 的内容。
-- 不得绕过冲突保护强制覆盖同名文件。
-- 不得移动或改名 `弃用教案/`、`原教案-旧版/` 内的受保护存档文件。
-- 不得移动或改名 `08-网络资源/` 内已归档的网络资料。
-
-## 变更记录
-
-- 2026-09-27：新增顶层目录 `08-网络资源/`（网络备课参考资料：优秀教案、优秀课件PPT、同步优学、板书设计参考）。`organize.py` 将 `08-网络资源` 加入已知顶层目录、`is_correct()` 直接判为已归档，并新增 `同步优学/金学典`、`板书设计` 的归类路由。
-
-- 2026-09-22：用户要求把 `07-培训研修/学习文件/教资面试备考` 上移为 `07-培训研修/教资面试备考`，并在其下按四阶段建立逐日学习包（每日 1 份自包含文档，`.md` + `.docx`）。同步更新 `organize.py`：新增 `interview_prep_ok()`，`教资面试备考` 根级与四阶段子目录直接判为已归档；`category_of` 新增 `教资面试` → `07-培训研修/教资面试备考/`。新增配套生成器 `06-工具与提示词/教程/generate_interview_daily.py`。
-- 2026-09-21：新增受保护存档目录 `弃用教案/`、`原教案-旧版/`（`is_correct` 直接判为已归档）；新增 `.py` 工具脚本落位 `06-工具与提示词/教程/`；明确存档内旧版同名时加 `-旧版` 后缀保留。
-- 2026-09-21：按用户确认，将第十四章 14.3 由「按实验条件分包」整理为扁平归档；`04-教案` 的 `第十五章-电流和电路.zip` 移入 `99-待处理/`。
+- 不删除任何文件；不覆盖同名文件（冲突只报告）。
+- 不整理未登记的工作区、代码仓库、$DSH_HOME。
+- 不绕过准入检查。
