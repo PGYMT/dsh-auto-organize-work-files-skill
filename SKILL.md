@@ -3,7 +3,7 @@ name: auto-organize-work-files
 description: Use when writing, moving, renaming or deleting any file inside an enabled document workspace (currently only 工作文件), and after any change in that workspace. Ask the target path before writing and verify after writing; run the rule lint after changing rules or another skill's output file names; keep the shared checklist in sync with its backup. Never operates on code repositories, $DSH_HOME, or unregistered workspaces.
 ---
 
-# 工作文件自动整理（v4.1 · 流程版）
+# 工作文件自动整理（v4.2 · 流程版）
 
 ## 适用范围
 
@@ -14,7 +14,7 @@ description: Use when writing, moving, renaming or deleting any file inside an e
 
 ## 去向铁律（plan 的判断顺序）
 
-1. **本次显式声明** `--dest "<目标目录>"`：生产方自己说清去处，优先级最高；声明不合法就报错并退回规则。
+1. **本次显式声明** `--dest "<目标目录>"`：生产方自己说清去处，优先级最高；声明不合法就报错并退回规则。**更新已有文件时加 `--update`**：目标已有同名文件也算合法（就地更新），不加则仍按“目标已存在”拒绝。
 2. **有主之树**：文件已在 `[owned]` 或内置豁免目录里，就地不动。
 3. **名称规则**：按 rules.toml 匹配。
 4. **兜底**：进 99-待处理/收件箱/。
@@ -31,9 +31,11 @@ plan 与 check 走同一套判断，不存在“一边说合法、一边说要�
 
 ## 命令
 
-问路（可选带显式声明）：
+问路（可选带显式声明）；更新已有文件时加 --update：
 
     python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py plan --name "<文件名>" --dest "<目标目录>" --workspace "<工作区>"
+
+    python3 ~/.dsh/skills/auto-organize-work-files/scripts/organize.py plan --name "<文件名>" --dest "<目标目录>" --update --workspace "<工作区>"
 
 核对：
 
@@ -82,7 +84,7 @@ plan 与 check 走同一套判断，不存在“一边说合法、一边说要�
 
 ## 禁止
 
-- 不删除任何文件；不覆盖同名文件（冲突只报告）。
+- 不删除任何文件；整理脚本自身不覆盖、不搬运同名文件（冲突只报告）。生产方用 --update 声明更新时，覆盖由生产方自己完成。
 - 不整理未登记的工作区、代码仓库、$DSH_HOME。
 - 不绕过准入检查。
 
@@ -90,6 +92,7 @@ plan 与 check 走同一套判断，不存在“一边说合法、一边说要�
 
 | 版本 | 日期 | 改动摘要 |
 |---|---|---|
+| v4.2 | 2026-10-11 | ①`plan` 新增 `--update`：声明更新已有文件时目标已存在也算合法，不再退回规则／收件箱；②`check` 对「目标＝源路径」不再计冲突，报告新增「已在位」；③lint 样本新增 `dest_exists`／`update` 两字段 |
 | v4.1 | 2026-09-27 | ①文档写清 sync_checklist.py 的四种退出码（含 3 ＝ 权威源读不到、用了备份）；②新增 --accept-authority：确认权威源更新后可采用，避免备份永远无法更新；③skill_link.py verify 新增“项目级不得有同名实体副本”检查 |
 | v4 | 2026-09-27 | 统一 resolve（显式声明 > 有主之树 > 名称规则 > 收件箱）；plan 新增 --dest；规则新增 exclude 与 [owned]；新增 lint 与样本语料；新增联动判断清单、sync_checklist.py、skill_link.py；权威源改为独立仓库 + 软链 |
 | v3 | — | 流程版：plan / check / apply / undo / archive / selftest / validate |

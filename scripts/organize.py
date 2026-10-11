@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""工作文件自动整理引擎 v4。
+"""工作文件自动整理引擎 v4.2。
 
 只读命令：plan / check / lint / selftest / validate / dsh-official
 会改磁盘：apply / undo / archive（都必须显式调用）
@@ -255,8 +255,11 @@ def owned_tops(config):
     return set(OWNED_TOP_NAMES) | {str(k) for k in owned.keys()}
 
 
-def validate_dest(dest, name, workspace):
-    """校验显式声明目的地；合法返回 None，否则返回不合法原因。"""
+def validate_dest(dest, name, workspace, update=False, exists=os.path.exists):
+    """校验显式声明目的地；合法返回 None，否则返回不合法原因。
+
+    update=True 表示声明的是更新已有文件，此时目标已存在同名文件仍算合法。
+    """
     raw = str(dest)
     d = raw.replace(os.sep, "/").strip().strip("/")
     if not d:
@@ -267,21 +270,22 @@ def validate_dest(dest, name, workspace):
         return "声明里不能有 . 或 .."
     if d.split("/")[0].startswith("."):
         return "声明不能指向隐藏目录"
-    if workspace and os.path.exists(os.path.join(workspace, d, name)):
-        return f"目标已存在同名文件：{d}/{name}"
+    if not update and workspace and exists(os.path.join(workspace, d, name)):
+        return f"目标已存在同名文件：{d}/{name}（如要更新请加 --update）"
     return None
 
 
-def resolve(name, rel, dest, config, workspace=""):
+def resolve(name, rel, dest, config, workspace="", update=False, exists=os.path.exists):
     """四步判断去向：显式声明 > 有主之树/已合规 > 名称规则 > 收件箱。"""
     general = config.get("general") or {}
     inbox = str(general.get("inbox", "99-待处理/收件箱")).strip("/")
     if dest:
-        reason = validate_dest(dest, name, workspace)
+        reason = validate_dest(dest, name, workspace, update, exists)
         if reason is None:
             d = str(dest).replace(os.sep, "/").strip().strip("/")
+            why = "生产方显式声明（--update 更新已有文件）" if update else "生产方显式声明"
             return {"action": "move", "target": f"{d}/{name}", "rule": "声明",
-                    "reason": "生产方显式声明", "confidence": "high", "severity": "warn"}
+                    "reason": why, "confidence": "high", "severity": "warn"}
         fallback = resolve(name, rel, "", config, workspace)
         fallback["dest_error"] = reason
         fallback["reason"] = f"声明不合法（{reason}），退回规则判断"
@@ -306,10 +310,13 @@ def scan(workspace, config):
     general = config.get("general") or {}
     extra = list(general.get("skip") or [])
     inbox = str(general.get("inbox", "99-待处理/收件箱")).strip("/")
-    planned, unknown = [], []
+    planned, unknown, in_place = [], [], []
     for full, rel in walk_files(workspace, extra):
         decision = resolve(os.path.basename(rel), rel, None, config, workspace)
         if decision["action"] == "stay":
+            continue
+        if decision["target"].strip("/") == rel.strip("/"):
+            in_place.append(rel)
             continue
         if decision["action"] == "inbox":
             unknown.append(rel)
@@ -333,7 +340,7 @@ def scan(workspace, config):
         else:
             moves.append(it)
     return {"workspace": workspace, "inbox": inbox, "moves": moves,
-            "conflicts": conflicts, "unknown": unknown,
+            "conflicts": conflicts, "unknown": unknown, "in_place": in_place,
             "generated_at": dt.datetime.now().isoformat(timespec="seconds")}
 
 
@@ -341,7 +348,8 @@ def render_md(result):
     out = ["# 整理核对报告", "",
            f"- 工作区：{result['workspace']}",
            f"- 时间：{result['generated_at']}",
-           f"- 待移动：{len(result['moves'])}　冲突：{len(result['conflicts'])}　拿不准：{len(result['unknown'])}",
+           f"- 待移动：{len(result['moves'])}　冲突：{len(result['conflicts'])}"
+           f"　拿不准：{len(result['unknown'])}　已在位：{len(result.get('in_place', []))}",
            ""]
     if result["moves"]:
         out.append("## 待移动")
@@ -376,7 +384,8 @@ def write_report(workspace, result):
 def cmd_plan(args, config):
     name = args.name
     rel = (args.dir.replace(os.sep, "/").strip("/") + "/" + name) if args.dir else name
-    decision = resolve(name, rel, getattr(args, "dest", ""), config, args.workspace or "")
+    decision = resolve(name, rel, getattr(args, "dest", ""), config, args.workspace or "",
+                       update=getattr(args, "update", False))
     if decision.get("dest_error"):
         eprint(f"声明不合法：{decision['dest_error']}")
     print(f"目标：{decision['target']}")
@@ -389,7 +398,8 @@ def cmd_plan(args, config):
 def cmd_check(args, config):
     result = scan(args.workspace, config)
     print(f"工作区：{args.workspace}")
-    print(f"待移动：{len(result['moves'])}　冲突：{len(result['conflicts'])}　拿不准：{len(result['unknown'])}")
+    print(f"待移动：{len(result['moves'])}　冲突：{len(result['conflicts'])}"
+          f"　拿不准：{len(result['unknown'])}　已在位：{len(result.get('in_place', []))}")
     for m in result["moves"][:20]:
         print(f"  移动: {m['source']} -> {m['target']}")
     if len(result["moves"]) > 20:
@@ -416,7 +426,9 @@ def cmd_lint(args, config):
         rel = (d + "/" + fn) if d else fn
         expect = str(s.get("expect", "")).replace(os.sep, "/").strip("/")
         declared = str(s.get("dest", "")).replace(os.sep, "/").strip("/")
-        decision = resolve(fn, rel, declared, config, args.workspace)
+        probe = (lambda _p: True) if s.get("dest_exists") else os.path.exists
+        decision = resolve(fn, rel, declared, config, args.workspace,
+                           update=bool(s.get("update")), exists=probe)
         actual = os.path.dirname(decision["target"]).strip("/")
         ext = os.path.splitext(fn)[1].lower()
         hits = [r.get("id", "?") for r in rules if rule_matches(r, fn, ext, rel)]
@@ -606,12 +618,14 @@ def main(argv=None):
             argv = ["check"] + [a for a in argv if a != "--check"]
         elif "--apply" in argv:
             argv = ["apply"] + [a for a in argv if a != "--apply"]
-    parser = argparse.ArgumentParser(description="工作文件自动整理引擎 v4")
+    parser = argparse.ArgumentParser(description="工作文件自动整理引擎 v4.2")
     common = argparse.ArgumentParser(add_help=False)
     add_common(common)
     sub = parser.add_subparsers(dest="cmd")
     sp = sub.add_parser("plan", parents=[common]); sp.add_argument("--name", required=True)
     sp.add_argument("--dir", default=""); sp.add_argument("--dest", default="")
+    sp.add_argument("--update", action="store_true",
+                    help="声明的是更新已有文件：目标已有同名文件也算合法")
     sc = sub.add_parser("check", parents=[common]); sc.add_argument("--no-report", action="store_true")
     sub.add_parser("lint", parents=[common])
     sa = sub.add_parser("apply", parents=[common])
