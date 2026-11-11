@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""工作文件自动整理引擎 v4.2。
+"""工作文件自动整理引擎 v5.0。
+
+v5 相对 v4.2：结构规格读表（[[structure]]）、structure_eval 三态、structurally_ok 退成薄壳、
+[owned] 前缀匹配、plan 多打印「规格」一行、lint 支持 state="stay" 结构样例并做交叉检查。
+没有 [structure] 段时完全走 v4.2 老逻辑，旧区行为不变。
 
 只读命令：plan / check / lint / selftest / validate / dsh-official
 会改磁盘：apply / undo / archive（都必须显式调用）
@@ -136,8 +140,74 @@ def walk_files(workspace, extra):
             yield full, rel
 
 
-def structurally_ok(rel):
-    """已经在合乎规范的目录结构里，就不再折腾。"""
+def load_structure(config):
+    """解析 [[structure]] 段。
+
+    path 按 / 切段，{占位} 只吃一层非空目录名；files 是「扩展名 -> 允许所在子目录」
+    （空串表示就在这一层）；dirs 是放行子树（内部不再逐文件检查）。
+    """
+    specs = []
+    for idx, raw in enumerate(config.get("structure") or []):
+        if not isinstance(raw, dict):
+            continue
+        path = str(raw.get("path") or "").strip("/")
+        if not path:
+            continue
+        files = {}
+        for k, v in (raw.get("files") or {}).items():
+            key = str(k).lower()
+            if not key.startswith("."):
+                key = "." + key
+            files[key] = str(v or "").strip("/")
+        dirs = [str(d).strip("/") for d in (raw.get("dirs") or []) if str(d).strip("/")]
+        specs.append({"path": path, "segs": path.split("/"), "files": files,
+                      "dirs": dirs, "index": idx})
+    return specs
+
+
+def _seg_match(pattern, actual):
+    if pattern.startswith("{") and pattern.endswith("}"):
+        return bool(actual)
+    return pattern == actual
+
+
+def structure_eval(rel, specs):
+    """文件「已经在某位置」合不合法：三态 ok / bad / miss，都带理由。"""
+    parts = [p for p in str(rel).split("/") if p]
+    if not parts:
+        return ("miss", "空路径")
+    name = parts[-1]
+    if name == "README.md":
+        return ("ok", "目录索引 README.md，放在目录根即可")
+    holder = parts[:-1]
+    ext = os.path.splitext(name)[1].lower()
+    for sp in specs:
+        segs = sp["segs"]
+        if len(holder) < len(segs):
+            continue
+        if not all(_seg_match(p, a) for p, a in zip(segs, holder)):
+            continue
+        rest = holder[len(segs):]
+        if rest and rest[0] in sp["dirs"]:
+            return ("ok", "在放行子树 %s/ 内（%s）" % (rest[0], sp["path"]))
+        allowed = sp["files"].get(ext)
+        here = "/".join(rest)
+        if allowed is None:
+            return ("bad", "%s 不在规格里（%s）" % (ext or "无扩展名", sp["path"]))
+        if here != allowed:
+            return ("bad", "%s 应放在 %s，现在在 %s" % (ext, allowed or "这一层", here or "这一层"))
+        return ("ok", "符合结构规格 %s" % sp["path"])
+    return ("miss", "没有结构条目覆盖")
+
+
+def structurally_ok(rel, specs=None):
+    """已经在合乎规范的目录结构里，就不再折腾。
+
+    有 [structure] 规格时走规格（薄壳）；没有规格时走原来的硬编码，旧区行为不变。
+    """
+    if specs:
+        state, _why = structure_eval(rel, specs)
+        return state == "ok"
     parts = rel.split("/")
     top = parts[0]
     name = parts[-1]
@@ -250,9 +320,19 @@ def classify(name, rel, config):
 
 
 def owned_tops(config):
-    """有主之树的顶层目录名集合：内置三棵 + 工作区 [owned] 段补充的。"""
+    """有主之树的目录名集合：内置三棵 + 工作区 [owned] 段补充的。"""
     owned = config.get("owned") or {}
     return set(OWNED_TOP_NAMES) | {str(k) for k in owned.keys()}
+
+
+def owned_hit(rel, config):
+    """有主之树改为前缀匹配：条目本身或它下面的整棵子树都算命中。"""
+    rel = str(rel).strip("/")
+    for name in sorted(owned_tops(config), key=len, reverse=True):
+        k = str(name).strip("/")
+        if k and (rel == k or rel.startswith(k + "/")):
+            return k
+    return None
 
 
 def validate_dest(dest, name, workspace, update=False, exists=os.path.exists):
@@ -275,10 +355,13 @@ def validate_dest(dest, name, workspace, update=False, exists=os.path.exists):
     return None
 
 
-def resolve(name, rel, dest, config, workspace="", update=False, exists=os.path.exists):
+def resolve(name, rel, dest, config, workspace="", update=False, exists=os.path.exists,
+            specs=None):
     """四步判断去向：显式声明 > 有主之树/已合规 > 名称规则 > 收件箱。"""
     general = config.get("general") or {}
     inbox = str(general.get("inbox", "99-待处理/收件箱")).strip("/")
+    if specs is None:
+        specs = load_structure(config)
     if dest:
         reason = validate_dest(dest, name, workspace, update, exists)
         if reason is None:
@@ -286,16 +369,22 @@ def resolve(name, rel, dest, config, workspace="", update=False, exists=os.path.
             why = "生产方显式声明（--update 更新已有文件）" if update else "生产方显式声明"
             return {"action": "move", "target": f"{d}/{name}", "rule": "声明",
                     "reason": why, "confidence": "high", "severity": "warn"}
-        fallback = resolve(name, rel, "", config, workspace)
+        fallback = resolve(name, rel, "", config, workspace, specs=specs)
         fallback["dest_error"] = reason
         fallback["reason"] = f"声明不合法（{reason}），退回规则判断"
         return fallback
     top = rel.split("/")[0] if rel else ""
-    if top in owned_tops(config):
+    hit = owned_hit(rel, config)
+    if hit is not None:
         return {"action": "stay", "target": rel, "rule": "有主之树",
-                "reason": f"{top} 由对应流程自己管理", "confidence": "high",
+                "reason": f"{hit} 由对应流程自己管理", "confidence": "high",
                 "severity": "warn"}
-    if structurally_ok(rel):
+    if specs:
+        state, why = structure_eval(rel, specs)
+        if state == "ok":
+            return {"action": "stay", "target": rel, "rule": "结构规格",
+                    "reason": why, "confidence": "high", "severity": "warn"}
+    elif structurally_ok(rel):
         return {"action": "stay", "target": rel, "rule": "就地",
                 "reason": "已在规范目录结构里", "confidence": "high", "severity": "warn"}
     info = classify(name, rel, config)
@@ -310,9 +399,10 @@ def scan(workspace, config):
     general = config.get("general") or {}
     extra = list(general.get("skip") or [])
     inbox = str(general.get("inbox", "99-待处理/收件箱")).strip("/")
+    specs = load_structure(config)
     planned, unknown, in_place = [], [], []
     for full, rel in walk_files(workspace, extra):
-        decision = resolve(os.path.basename(rel), rel, None, config, workspace)
+        decision = resolve(os.path.basename(rel), rel, None, config, workspace, specs=specs)
         if decision["action"] == "stay":
             continue
         if decision["target"].strip("/") == rel.strip("/"):
@@ -392,6 +482,11 @@ def cmd_plan(args, config):
     print(f"规则：{decision['rule']}")
     print(f"把握度：{decision['confidence']}")
     print(f"理由：{decision['reason']}")
+    specs = load_structure(config)
+    if specs:
+        state, why = structure_eval(rel, specs)
+        label = {"ok": "合规", "bad": "不合规", "miss": "未覆盖"}[state]
+        print(f"规格：{label}（{why}）")
     return 1 if decision.get("dest_error") else 0
 
 
@@ -414,21 +509,79 @@ def cmd_check(args, config):
     return 3 if has_error else 0
 
 
+def _rule_target_segs(target):
+    return [p for p in str(target).strip("/").split("/") if p]
+
+
+def rule_target_covered(target, specs):
+    """规则目标是否被某条结构规格兜住（占位符按“任意一层”比较）。"""
+    segs = _rule_target_segs(target)
+    if not segs:
+        return True
+    for sp in specs:
+        s = sp["segs"]
+        if len(s) >= len(segs):
+            if all(_seg_match(p, a) for p, a in zip(s, segs)):
+                return True
+        elif all(_seg_match(p, a) for p, a in zip(s, segs)):
+            return True
+    return False
+
+
+def structure_lint(config, specs, workspace):
+    """结构表交叉检查。返回 (errors, warnings)：errors 会让 lint 判失败。"""
+    errors, warnings = [], []
+    seen = {}
+    for sp in specs:
+        segs = sp["segs"]
+        holders = [x for x in segs if x.startswith("{") and x.endswith("}")]
+        if len(holders) != len(set(holders)):
+            errors.append(f"占位符重名：{sp['path']}")
+        key = tuple("*" if x.startswith("{") else x for x in segs)
+        if key in seen:
+            errors.append(f"结构重复：{sp['path']}（与第 {seen[key] + 1} 条同形）")
+        seen.setdefault(key, sp["index"])
+        if len(segs) <= 1 and len(sp["files"]) >= 2:
+            warnings.append(f"结构写太宽：{sp['path']} 只有一层却允许 {len(sp['files'])} 类扩展名，"
+                            "可能放行错位")
+    # 规则目标没被结构覆盖（有主之树内的目标不算：那几棵树整体放行）
+    for rule in config.get("rules") or []:
+        action = rule.get("action") or {}
+        target = str(action.get("target") or "").strip("/")
+        if not target:
+            continue
+        if owned_hit(target, config) is not None:
+            continue
+        if not rule_target_covered(target, specs):
+            warnings.append(f"路由有、结构没管：规则 {rule.get('id')} 的目标 {target} "
+                            "没有被任何结构条目覆盖")
+    return errors, warnings
+
+
 def cmd_lint(args, config):
-    """规则体检：用样本文件名跑一遍，找出误判、多规则争抢与拿不准。"""
+    """规则体检：用样本文件名跑一遍，找出误判、多规则争抢与拿不准，并交叉检查结构表。"""
     data = read_toml(os.path.join(args.workspace, SAMPLES_REL), "样本清单")
     samples = data.get("samples") or []
+    specs = load_structure(config)
     rules = config.get("rules") or []
-    ok = fail = grabbed = 0
+    ok = fail = grabbed = stay_ok = stay_fail = 0
     for s in samples:
         fn = os.path.basename(str(s.get("file", "")))
         d = str(s.get("dir", "")).replace(os.sep, "/").strip("/")
         rel = (d + "/" + fn) if d else fn
+        if str(s.get("state", "")).strip().lower() == "stay":
+            state, why = structure_eval(rel, specs)
+            if state == "ok":
+                stay_ok += 1
+            else:
+                stay_fail += 1
+                print(f"FAIL[stay]：{rel} 期望就地合规，实际 {state}（{why}）")
+            continue
         expect = str(s.get("expect", "")).replace(os.sep, "/").strip("/")
         declared = str(s.get("dest", "")).replace(os.sep, "/").strip("/")
         probe = (lambda _p: True) if s.get("dest_exists") else os.path.exists
         decision = resolve(fn, rel, declared, config, args.workspace,
-                           update=bool(s.get("update")), exists=probe)
+                           update=bool(s.get("update")), exists=probe, specs=specs)
         actual = os.path.dirname(decision["target"]).strip("/")
         ext = os.path.splitext(fn)[1].lower()
         hits = [r.get("id", "?") for r in rules if rule_matches(r, fn, ext, rel)]
@@ -444,8 +597,18 @@ def cmd_lint(args, config):
             fail += 1
             print(f"FAIL：{rel}（声明 {declared or '无'}）"
                   f"期望 {expect or '根级'}，实际 {actual or '根级'}")
-    print(f"lint：样本 {len(samples)} 条，通过 {ok}，不符 {fail}，多规则争抢 {grabbed}")
-    return 1 if (fail or grabbed) else 0
+    errors, warnings = structure_lint(config, specs, args.workspace)
+    for w in warnings:
+        print(f"提示：{w}")
+    for e in errors:
+        print(f"结构错误：{e}")
+    if not specs:
+        print("结构规格：未启用（没有 [structure] 段，走原来的硬编码判断）")
+    else:
+        print(f"结构规格：{len(specs)} 条，交叉检查错误 {len(errors)}，提示 {len(warnings)}")
+    print(f"lint：样本 {len(samples)} 条，通过 {ok}，不符 {fail}，多规则争抢 {grabbed}；"
+          f"结构样例就地 {stay_ok}，不符 {stay_fail}")
+    return 1 if (fail or grabbed or stay_fail or errors) else 0
 
 
 def cmd_apply(args, config):
@@ -618,7 +781,7 @@ def main(argv=None):
             argv = ["check"] + [a for a in argv if a != "--check"]
         elif "--apply" in argv:
             argv = ["apply"] + [a for a in argv if a != "--apply"]
-    parser = argparse.ArgumentParser(description="工作文件自动整理引擎 v4.2")
+    parser = argparse.ArgumentParser(description="工作文件自动整理引擎 v5.0")
     common = argparse.ArgumentParser(add_help=False)
     add_common(common)
     sub = parser.add_subparsers(dest="cmd")
