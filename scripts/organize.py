@@ -484,7 +484,8 @@ def cmd_plan(args, config):
     print(f"理由：{decision['reason']}")
     specs = load_structure(config)
     if specs:
-        state, why = structure_eval(rel, specs)
+        # 看「落点」有没有结构约束：按算出来的目标位置判，而不是文件当前在哪
+        state, why = structure_eval(decision["target"], specs)
         label = {"ok": "合规", "bad": "不合规", "miss": "未覆盖"}[state]
         print(f"规格：{label}（{why}）")
     return 1 if decision.get("dest_error") else 0
